@@ -76,6 +76,17 @@ def write_head(fout, nmo, nelec, ms=0, orbsym=None):
     fout.write('  ISYM=1,\n')
     fout.write(' &END\n')
 
+def write_head55(fout, nmo, nelec, ms=0, orbsym=None):
+    if not isinstance(nelec, (int, numpy.number)):
+        ms = abs(nelec[0] - nelec[1])
+        nelec = nelec[0] + nelec[1]
+    fout.write(f" {nmo:4d} {nelec:2d}\n")
+    if orbsym is not None and len(orbsym) > 0:
+        orbsym = [x + 1 for x in orbsym]
+        fout.write(f"{' '.join([str(x) for x in orbsym])}\n")
+    else:
+        fout.write(f"{' 1' * nmo}\n")
+    fout.write(' 0\n')
 
 def write_eri(fout, eri, nmo, tol=TOL, float_format=DEFAULT_FLOAT_FORMAT):
     npair = nmo*(nmo+1)//2
@@ -121,7 +132,7 @@ def write_hcore(fout, h, nmo, tol=TOL, float_format=DEFAULT_FLOAT_FORMAT):
 
 
 def from_chkfile(filename, chkfile, tol=TOL, float_format=DEFAULT_FLOAT_FORMAT,
-                 molpro_orbsym=MOLPRO_ORBSYM, orbsym=None):
+                 molpro_orbsym=MOLPRO_ORBSYM, orbsym=None, use_fort55=False):
     '''Read SCF results from PySCF chkfile and transform 1-electron,
     2-electron integrals using the SCF orbitals.  The transformed integrals is
     written to FCIDUMP
@@ -130,6 +141,8 @@ def from_chkfile(filename, chkfile, tol=TOL, float_format=DEFAULT_FLOAT_FORMAT,
         molpro_orbsym (bool): Whether to dump the orbsym in Molpro orbsym
             convention as documented in
             https://www.molpro.net/info/current/doc/manual/node36.html
+
+        use_fort55 (bool): Whether to use the write_head55() function for FCIDUMP format
     '''
     mol, scf_rec = scf.chkfile.load_scf(chkfile)
     mo_coeff = numpy.array(scf_rec['mo_coeff'])
@@ -145,13 +158,16 @@ def from_chkfile(filename, chkfile, tol=TOL, float_format=DEFAULT_FLOAT_FORMAT,
                                      mol.symm_orb, mo_coeff, check=False)
     from_mo(mol, filename, mo_coeff, orbsym=orbsym, tol=tol,
             float_format=float_format, molpro_orbsym=molpro_orbsym,
-            ms=mol.spin)
+            ms=mol.spin, use_fort55=use_fort55)
 
 def from_integrals(filename, h1e, h2e, nmo, nelec, nuc=0, ms=0, orbsym=None,
-                   tol=TOL, float_format=DEFAULT_FLOAT_FORMAT):
+                   tol=TOL, float_format=DEFAULT_FLOAT_FORMAT, use_fort55=False):
     '''Convert the given 1-electron and 2-electron integrals to FCIDUMP format'''
     with open(filename, 'w') as fout:
-        write_head(fout, nmo, nelec, ms, orbsym)
+        if use_fort55:
+            write_head55(fout, nmo, nelec, ms, orbsym)
+        else:
+            write_head(fout, nmo, nelec, ms, orbsym)
         write_eri(fout, h2e, nmo, tol=tol, float_format=float_format)
         write_hcore(fout, h1e, nmo, tol=tol, float_format=float_format)
         output_format = float_format + '  0  0  0  0\n'
@@ -159,8 +175,8 @@ def from_integrals(filename, h1e, h2e, nmo, nelec, nuc=0, ms=0, orbsym=None,
 
 def from_mo(mol, filename, mo_coeff, orbsym=None,
             tol=TOL, float_format=DEFAULT_FLOAT_FORMAT,
-            molpro_orbsym=MOLPRO_ORBSYM, ms=0):
-    '''Use the given MOs to transfrom the 1-electron and 2-electron integrals
+            molpro_orbsym=MOLPRO_ORBSYM, ms=0, use_fort55=False):
+    '''Use the given MOs to transform the 1-electron and 2-electron integrals
     then dump them to FCIDUMP.
 
     Kwargs:
@@ -180,11 +196,11 @@ def from_mo(mol, filename, mo_coeff, orbsym=None,
     eri = ao2mo.full(mol, mo_coeff, verbose=0)
     nuc = mol.energy_nuc()
     from_integrals(filename, h1e, eri, h1e.shape[0], mol.nelec, nuc, ms, orbsym,
-                   tol, float_format)
+                   tol, float_format, use_fort55=use_fort55)
 
 def from_scf(mf, filename, tol=TOL, float_format=DEFAULT_FLOAT_FORMAT,
-             molpro_orbsym=MOLPRO_ORBSYM):
-    '''Use the given SCF object to transfrom the 1-electron and 2-electron
+             molpro_orbsym=MOLPRO_ORBSYM, use_fort55=False):
+    '''Use the given SCF object to transform the 1-electron and 2-electron
     integrals then dump them to FCIDUMP.
 
     Kwargs:
@@ -209,8 +225,35 @@ def from_scf(mf, filename, tol=TOL, float_format=DEFAULT_FLOAT_FORMAT,
         orbsym = [ORBSYM_MAP[mol.groupname][i] for i in orbsym]
     nuc = mf.energy_nuc()
     from_integrals(filename, h1e, eri, h1e.shape[0], mf.mol.nelec, nuc, 0, orbsym,
-                   tol, float_format)
+                   tol, float_format, use_fort55=use_fort55)
 
+def from_mcscf(mc, filename, tol=TOL, float_format=DEFAULT_FLOAT_FORMAT,
+               molpro_orbsym=MOLPRO_ORBSYM, use_fort55=False):
+    '''Use the given MCSCF object to obtain the CAS 1-electron and 2-electron
+    integrals and dump them to FCIDUMP.
+
+    Kwargs:
+        tol (float): Threshold for writing elements to FCIDUMP
+        float_format (str): Float format for writing elements to FCIDUMP
+        molpro_orbsym (bool): Whether to dump the orbsym in Molpro orbsym
+            convention as documented in
+            https://www.molpro.net/manual/doku.php?id=general_program_structure#symmetry
+    '''
+    mol = mc.mol
+    mo_coeff = mc.mo_coeff
+    assert mo_coeff.dtype == numpy.double
+
+    h1eff, ecore = mc.get_h1eff()
+    h2eff = mc.get_h2eff()
+    orbsym = getattr(mo_coeff, 'orbsym', None)
+    if orbsym is not None:
+        orbsym = orbsym[mc.ncore:mc.ncore + mc.ncas]
+    if molpro_orbsym and orbsym is not None:
+        orbsym = [ORBSYM_MAP[mol.groupname][i] for i in orbsym]
+    nelecas = mc.nelecas[0] + mc.nelecas[1]
+    ms = abs(mc.nelecas[0] - mc.nelecas[1])
+    from_integrals(filename, h1eff, h2eff, mc.ncas, nelecas, nuc=ecore, ms=ms,
+                   orbsym=orbsym, tol=tol, float_format=float_format, use_fort55=use_fort55)
 
 def read(filename, molpro_orbsym=MOLPRO_ORBSYM, verbose=True):
     '''Parse FCIDUMP.  Return a dictionary to hold the integrals and
@@ -218,10 +261,13 @@ def read(filename, molpro_orbsym=MOLPRO_ORBSYM, verbose=True):
 
     Kwargs:
         molpro_orbsym (bool): Whether the orbsym in the FCIDUMP file is in
-            Molpro orbsym convention as documented in
-            https://www.molpro.net/info/current/doc/manual/node36.html
+            Molpro orbsym convention as documented in::
+
+                https://www.molpro.net/info/current/doc/manual/node36.html
+
             In return, orbsym is converted to pyscf symmetry convention
         verbose (bool): Whether to print debugging information
+
     '''
     if verbose:
         print('Parsing %s' % filename)
